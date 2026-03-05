@@ -1,0 +1,7 @@
+{
+  "id": "openclaw-tracer",
+  "name": "OpenClaw Tracer",
+  "version": "0.1.0",
+  "description": "Observability plugin — tracks skills, tools, hooks, and LLM usage per request",
+  "entry": "src/index.ts"
+}

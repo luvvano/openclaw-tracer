@@ -1,0 +1,7 @@
+{
+  "name": "openclaw-tracer",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "OpenClaw request tracing plugin",
+  "main": "src/index.ts"
+}
