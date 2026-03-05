@@ -1,5 +1,5 @@
 import type { PluginContext } from "openclaw/plugin-sdk/core";
-import { initDb } from "./db.js";
+import { initDb, pruneOldSessions } from "./db.js";
 import { getConfig } from "./config.js";
 import { Tracer } from "./tracer.js";
 
@@ -21,8 +21,98 @@ export default function tracerPlugin(api: PluginContext): void {
   const tracer = new Tracer(db, config, api.logger);
   api.logger.info("[tracer] initialized, DB ready");
 
-  // Phase 2: hook registrations go here (tracer.onSessionStart, etc.)
-  void tracer; // used in Phase 2
+  // ── Session lifecycle ───────────────────────────────────────────────────
+
+  api.on("session_start", (event, _ctx) => {
+    try {
+      const e = event as { sessionId: string; sessionKey?: string };
+      tracer.onSessionStart(e.sessionId, e.sessionKey);
+    } catch { /* ignore */ }
+  });
+
+  api.on("session_end", (event, _ctx) => {
+    try {
+      const e = event as { sessionId: string; messageCount?: number };
+      tracer.onSessionEnd(e.sessionId, e.messageCount);
+      pruneOldSessions(db, config.max_sessions);
+    } catch { /* ignore */ }
+  });
+
+  // ── Agent context (source metadata) ────────────────────────────────────
+
+  api.on("before_agent_start", (event, ctx) => {
+    try {
+      const c = ctx as { sessionId?: string; sessionKey?: string; agentId?: string; trigger?: string; channelId?: string };
+      if (!c.sessionId) return;
+      tracer.setSessionSource(c.sessionId, {
+        trigger: c.trigger,
+        agentType: (!c.agentId || c.agentId === "main") ? "main" : "subagent",
+        sessionKey: c.sessionKey,
+        channel: c.channelId,
+      });
+    } catch { /* ignore */ }
+  });
+
+  api.on("message_received", (event, ctx) => {
+    try {
+      const e = event as { from: string; content: string };
+      const c = ctx as { channelId?: string; sessionId?: string };
+      if (c.sessionId) {
+        tracer.setSessionSource(c.sessionId, {
+          senderId: e.from,
+          channel: c.channelId,
+        });
+      }
+    } catch { /* ignore */ }
+  });
+
+  // ── LLM calls ──────────────────────────────────────────────────────────
+
+  api.on("llm_input", (event, _ctx) => {
+    try {
+      const e = event as { runId: string; sessionId: string; provider: string; model: string };
+      tracer.onLlmInput(e.runId, e.sessionId, e.model, e.provider);
+    } catch { /* ignore */ }
+  });
+
+  api.on("llm_output", (event, _ctx) => {
+    try {
+      const e = event as {
+        runId: string; sessionId: string; provider: string; model: string;
+        usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number };
+      };
+      tracer.onLlmOutput(e.runId, e.sessionId, e.model, e.provider, e.usage);
+    } catch { /* ignore */ }
+  });
+
+  // ── Tool calls ──────────────────────────────────────────────────────────
+
+  api.on("before_tool_call", (event, _ctx) => {
+    try {
+      const e = event as { toolName: string; params: Record<string, unknown>; runId?: string };
+      tracer.onBeforeToolCall(e.toolName, e.runId, e.params);
+    } catch { /* ignore */ }
+  });
+
+  api.on("after_tool_call", (event, ctx) => {
+    try {
+      const e = event as { toolName: string; params: Record<string, unknown>; runId?: string; error?: string };
+      const c = ctx as { sessionId?: string };
+      tracer.onAfterToolCall(e.toolName, e.runId, c.sessionId, e.params, e.error);
+    } catch { /* ignore */ }
+  });
+
+  // ── Subagents ───────────────────────────────────────────────────────────
+
+  api.on("subagent_spawned", (event, ctx) => {
+    try {
+      const e = event as { childSessionKey: string; agentId: string; mode: string; runId: string };
+      const c = ctx as { sessionId?: string };
+      tracer.onSubagentSpawned(e.childSessionKey, e.mode, e.runId, c.sessionId);
+    } catch { /* ignore */ }
+  });
+
+  // ── Gateway startup verify ──────────────────────────────────────────────
 
   api.on("gateway_start", async () => {
     try {
